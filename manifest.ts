@@ -28,10 +28,10 @@ export default Manifest({
     configurator,
     maintenanceJob,
   ],
-  outgoingDomains: [
-    "api-free.deepl.com",
-    "api.deepl.com",
-  ],
+outgoingDomains: [
+  "api.openai.com",
+  "openai.com",
+],
   botScopes: [
     // reacjilator
     "commands",
