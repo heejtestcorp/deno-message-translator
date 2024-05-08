@@ -59,138 +59,45 @@ export default SlackFunction(def, async ({ inputs, client, env }) => {
   const translationTarget = translationTargetResponse.messages[0];
   const translationTargetThreadTs = translationTarget.thread_ts;
 
-  const authKey = env.DEEPL_AUTH_KEY;
-  if (!authKey) {
+  const openaiApiKey = env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
     const error =
-      "DEEPL_AUTH_KEY needs to be set. You can place .env file for local dev. For production apps, please run `slack env add DEEPL_AUTH_KEY (your key here)` to set the value.";
+      "OPENAI_API_KEY needs to be set. You can place .env file for local dev. For production apps, please run `slack env add OPENAI_API_KEY (your key here)` to set the value.";
     return { error };
   }
-  const apiSubdomain = authKey.endsWith(":fx") ? "api-free" : "api";
-  const url = `https://${apiSubdomain}.deepl.com/v2/translate`;
-  const body = new URLSearchParams();
 
-  body.append("auth_key", authKey);
+  const body = {
+    model: "text-davinci-003",
+    prompt: `Translate this text to ${inputs.lang.toUpperCase()}: "${translationTarget.text}"`,
+    temperature: 0.5,
+    max_tokens: 200,
+  };
 
-  const targetText = translationTarget.text
-    // Before sending the text to the DeepL API,
-    // replace special syntax parts with ignore tags to keep them
-    // Thanks to @Janjoch's great contribution:
-    // https://github.com/seratch/deepl-for-slack/pull/18
-    .replace(/<(.*?)>/g, (_: unknown, match: string) => {
-      // match #channels and @mentions
-      if (match.match(/^[#@].*$/)) {
-        const matched = match.match(/^([#@].*)$/);
-        if (matched != null) {
-          return "<mrkdwn>" + matched[1] + "</mrkdwn>";
-        }
-        return "";
-      }
-      // match subteam
-      if (match.match(/^!subteam.*$/)) {
-        return "@[subteam mention removed]";
-      }
-      // match date formatting
-      if (match.match(/^!date.*$/)) {
-        const matched = match.match(/^(!date.*)$/);
-        if (matched != null) {
-          return "<mrkdwn>" + matched[1] + "</mrkdwn>";
-        }
-        return "";
-      }
-      // match special mention
-      if (match.match(/^!.*$/)) {
-        const matched = match.match(/^!(.*?)(?:\|.*)?$/);
-        if (matched != null) {
-          return "<ignore>@" + matched[1] + "</ignore>";
-        }
-        return "<ignore>@[special mention]</ignore>";
-      }
-      // match formatted link
-      if (match.match(/^.*?\|.*$/)) {
-        const matched = match.match(/^(.*?)\|(.*)$/);
-        if (matched != null) {
-          return '<a href="' + matched[1] + '">' + matched[2] + "</a>";
-        }
-        return "";
-      }
-      // fallback (raw link or unforeseen formatting)
-      return "<mrkdwn>" + match + "</mrkdwn>";
-      // match emoji
-    })
-    .replace(/:([a-z0-9_-]+):/g, (_: unknown, match: string) => {
-      return "<emoji>" + match + "</emoji>";
-    });
-  body.append("text", targetText);
-  body.append("tag_handling", "xml");
-  body.append("ignore_tags", "emoji,mrkdwn,ignore");
-
-  body.append("target_lang", inputs.lang.toUpperCase());
-
-  const deeplResponse = await fetch(url, {
+  const openaiResponse = await fetch("https://api.openai.com/v1/engines/text-davinci-003/completions", {
     method: "POST",
     headers: {
-      "content-type": "application/x-www-form-urlencoded;charset=utf-8",
+      "content-type": "application/json",
+      "Authorization": `Bearer ${openaiApiKey}`,
     },
-    body,
+    body: JSON.stringify(body),
   });
-  if (deeplResponse.status != 200) {
-    if (deeplResponse.status == 403) {
-      // If the status code is 403, the given auth key is not valid
-      const error =
-        `Translating a message failed! Please make sure if the DEEPL_AUTH_KEY is correct. - (status: ${deeplResponse.status}, target text: ${
-          targetText.substring(0, 30)
-        }...)`;
-      console.log(error);
-      return { error };
-    }
-    const body = await deeplResponse.text();
-    const error =
-      `Translating a message failed! Contact the app maintainers with the following information - (status: ${deeplResponse.status}, body: ${body}, target text: ${
-        targetText.substring(0, 30)
-      }...)`;
+  if (openaiResponse.status != 200) {
+    const error = `Translating a message failed! Please make sure if the OPENAI_API_KEY is correct. - (status: ${openaiResponse.status}, target text: ${translationTarget.text.substring(0, 30)}...)`;
     console.log(error);
     return { error };
   }
-  const translationResult = await deeplResponse.json();
+  const translationResult = await openaiResponse.json();
   if (debugMode) {
     console.log(`translation result: ${JSON.stringify(translationResult)}`);
   }
 
-  if (
-    !translationResult ||
-    !translationResult.translations ||
-    translationResult.translations.length === 0
-  ) {
+  if (!translationResult || !translationResult.choices || translationResult.choices.length === 0) {
     const printableResponse = JSON.stringify(translationResult);
-    const error =
-      `Translating a message failed! Contact the app maintainers with the following information - (DeepL API response: ${printableResponse})`;
+    const error = `Translating a message failed! Contact the app maintainers with the following information - (OpenAI API response: ${printableResponse})`;
     console.log(error);
     return { error };
   }
-  const translatedText = translationResult.translations[0].text
-    // Parse encoding tags to restore the original special syntax
-    .replace(/<emoji>([a-z0-9_-]+)<\/emoji>/g, (_: unknown, match: string) => {
-      return ":" + match + ":";
-      // match <mrkdwn>...</mrkdwn>
-    })
-    .replace(/<mrkdwn>(.*?)<\/mrkdwn>/g, (_: unknown, match: string) => {
-      return "<" + match + ">";
-      // match <a href="...">...</a>
-    })
-    .replace(
-      /(<a href="(?:.*?)">(?:.*?)<\/a>)/g,
-      (_: unknown, match: string) => {
-        const matched = match.match(/<a href="(.*?)">(.*?)<\/a>/);
-        if (matched != null) {
-          return "<" + matched[1] + "|" + matched[2] + ">";
-        }
-        return "";
-        // match <ignore>...</ignore>
-      },
-    )
-    .replace(/<ignore>(.*?)<\/ignore>/g, (_: unknown, match: string) => {
-      return match;
-    });
+  const translatedText = translationResult.choices[0].text;
 
   const replies = await client.conversations.replies({
     channel: inputs.channelId,
