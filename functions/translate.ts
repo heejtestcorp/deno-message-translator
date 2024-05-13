@@ -3,9 +3,9 @@ import { SlackAPIClient } from "deno-slack-sdk/types.ts";
 import { isDebugMode } from "./internals/debug_mode.ts";
 
 export const def = DefineFunction({
-  callback_id: "translate_using_openai",
+  callback_id: "translate",
   title: "Translate message using OpenAI and post as a reply in its thread",
-  source_file: "functions/translate_using_openai.ts",
+  source_file: "functions/translate.ts",
   input_parameters: {
     properties: {
       channelId: { type: Schema.types.string },
@@ -24,7 +24,9 @@ export default SlackFunction(def, async ({ inputs, client, env }) => {
   const debugMode = isDebugMode(env);
   const apiKey = env.OPENAI_API_KEY; // Ensure the API key is available
   if (!apiKey) {
-    return { error: "OpenAI API key is not set. Please configure it properly." };
+    return {
+      error: "OpenAI API key is not set. Please configure it properly.",
+    };
   }
 
   // Fetch the target message to translate
@@ -35,6 +37,8 @@ export default SlackFunction(def, async ({ inputs, client, env }) => {
     inclusive: true,
   });
 
+  console.log("msgResponse", msgResponse);
+
   if (msgResponse.messages.length == 0) {
     console.log("No message found for translation.");
     return { outputs: {} };
@@ -42,25 +46,32 @@ export default SlackFunction(def, async ({ inputs, client, env }) => {
   const targetText = msgResponse.messages[0].text;
 
   // Prepare the OpenAI API call
-  const translationPrompt = `Translate this to ${inputs.lang}: ${targetText}`;
-  console.log(`Sending translation request to OpenAI: ${JSON.stringify({
-      model: "gpt-4",
-      prompt: translationPrompt,
-      max_tokens: 1024,
-      temperature: 0.5
-  })}`);
+
+  const requestBody = {
+    model: "gpt-4-turbo",
+    messages: [{
+      role: "system",
+      content:
+        `You are a helpful translation assistant. You translate the user's message into ${inputs.lang}`,
+    }, {
+      role: "user",
+      content: targetText,
+    }],
+    max_tokens: 1024,
+    temperature: 0.5,
+  };
+
+  console.log(
+    `Sending translation request to OpenAI: ${JSON.stringify(requestBody)}`,
+  );
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: "gpt-4",
-      prompt: translationPrompt,
-      max_tokens: 1024,
-      temperature: 0.5,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -69,18 +80,22 @@ export default SlackFunction(def, async ({ inputs, client, env }) => {
     return { error };
   }
 
+  console.log(response);
+
   const { choices } = await response.json();
-  if (choices.length === 0 || !choices[0].text) {
+  if (choices.length === 0 || !choices[0].message.content) {
     return { outputs: {} };
   }
-  const translatedText = choices[0].text.trim();
+  const translatedText = choices[0].message.content.trim();
 
   // Post the translation back to the Slack thread
-  console.log(`Sending post message request to Slack: ${JSON.stringify({
+  console.log(`Sending post message request to Slack: ${
+    JSON.stringify({
       channel: inputs.channelId,
       text: translatedText,
-      thread_ts: inputs.messageTs
-  })}`);
+      thread_ts: inputs.messageTs,
+    })
+  }`);
   const result = await client.chat.postMessage({
     channel: inputs.channelId,
     text: translatedText,
